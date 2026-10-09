@@ -1,119 +1,142 @@
-﻿from pyspark.sql import SparkSession
+"""
+TALLER ETL CON PYSPARK: PROCESAMIENTO Y LIMPIEZA DE LA LIGA COLOMBIANA
+Proceso ETL:
+  1. Extracción: Lectura del archivo CSV 'liga_colombiana_sucia (1).csv'.
+  2. Transformación: Limpieza de duplicados, normalización de nombres de equipos 
+     y corrección de fechas faltantes.
+  3. Carga: Exportación a Parquet y registro de vista temporal para consultas Spark SQL.
+"""
 
-# Aquí encendemos el motor y le ponemos un nombre a nuestro proyecto
-spark = SparkSession.builder \
-    .appName("ETL_NYC_Flights_2013") \
-    .getOrCreate()
+import shutil
+from pathlib import Path
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, trim, upper, when, lit
 
-# Cargar la tabla principal de vuelos
-df_flights = spark.read.format("csv") \
-    .option("header", "true") \
-    .option("inferSchema", "true") \
-    .load("flights.csv")
+def main():
+    # ---------------------------------------------------------
+    # PASO 1: INICIALIZACIÓN DE LA SESIÓN DE SPARK
+    # ---------------------------------------------------------
+    spark = SparkSession.builder \
+        .appName("ETL_Liga_Colombiana") \
+        .getOrCreate()
 
-# Cargar el catálogo de aerolíneas
-df_airlines = spark.read.format("csv") \
-    .option("header", "true") \
-    .option("inferSchema", "true") \
-    .load("airlines.csv")
-Vanessa Mena jejejejje
-# Cargar el catálogo de aeropuertos
-df_airports = spark.read.format("csv") \
-    .option("header", "true") \
-    .option("inferSchema", "true") 
-    .load("airports.csv")
+    # Silenciar logs innecesarios de la JVM
+    spark.sparkContext.setLogLevel("ERROR")
 
-# Cargar el catálogo de aviones
-df_planes = spark.read.format("csv") \
-    .option("header", "true") \
-    .option("inferSchema", "true") \
-    .load("planes.csv")
+    # ---------------------------------------------------------
+    # FASE 1: EXTRACCIÓN (E)
+    # ---------------------------------------------------------
+    ruta_csv = "liga_colombiana_sucia (1).csv"
+    
+    df_raw = spark.read \
+        .option("header", "true") \
+        .option("inferSchema", "true") \
+        .csv(ruta_csv)
 
-# Ver las columnas y sus tipos de datos
-df_flights.printSchema()
+    total_inicial = df_raw.count()
+    print("=" * 60)
+    print(f"FASE 1 - EXTRACCIÓN: Registros leídos inicialmente: {total_inicial}")
+    print("=" * 60)
 
-# Ver las primeras 5 filas de la tabla de vuelos
-df_flights.show(5)
+    # ---------------------------------------------------------
+    # FASE 2: TRANSFORMACIÓN Y LIMPIEZA (T)
+    # ---------------------------------------------------------
+    # Paso 2.1: Eliminación de duplicados
+    df_sin_duplicados = df_raw.dropDuplicates()
+    total_sin_duplicados = df_sin_duplicados.count()
+    duplicados_removidos = total_inicial - total_sin_duplicados
 
+    # Paso 2.2: Normalización de nombres de equipos (Mayúsculas y sin espacios a los lados)
+    df_normalizado = df_sin_duplicados.withColumn("equipo", trim(upper(col("equipo"))))
 
+    # Paso 2.3: Reemplazar fechas 'fecha desconocida' o nulas con la fecha predeterminada '2024-07-24 6:15 pm'
+    fecha_default = "2024-07-24 6:15 pm"
+    
+    df_limpio = df_normalizado.withColumn(
+        "fecha",
+        when(
+            (trim(col("fecha")) == "fecha desconocida") | 
+            (col("fecha").isNull()) | 
+            (trim(col("fecha")) == ""), 
+            lit(fecha_default)
+        ).otherwise(trim(col("fecha")))
+    )
 
+    total_limpio = df_limpio.count()
 
-Sjdjsjsbsjkajansnssosbd
+    print("\nRESUMEN DE AUDITORÍA DE CALIDAD DE DATOS (ETL):")
+    print(f"- Registros originales:         {total_inicial}")
+    print(f"- Registros duplicados removidos:{duplicados_removidos}")
+    print(f"- Registros finales procesados: {total_limpio}")
+    print("=" * 60)
 
+    # ---------------------------------------------------------
+    # FASE 3: CARGA (L) - EXPORTACIÓN PARQUET Y CREACIÓN DE VISTA SQL
+    # ---------------------------------------------------------
+    output_path = Path("liga_colombiana_limpia.parquet")
+    shutil.rmtree(output_path, ignore_errors=True)
+    
+    df_limpio.write.mode("overwrite").parquet(str(output_path))
+    print(f"\n✓ Dataset exportado exitosamente a Parquet en '{output_path}'")
 
+    # Registro de vista temporal para consultas Spark SQL
+    df_limpio.createOrReplaceTempView("liga_colombiana")
 
+    print("\nESQUEMA DE DATOS LIMPIOS:")
+    df_limpio.printSchema()
 
-import pandas as pd
+    # ---------------------------------------------------------
+    # CONSULTAS SPARK SQL
+    # ---------------------------------------------------------
+    print("\n" + "=" * 60)
+    print("           RESULTADOS DE LAS CONSULTAS SPARK SQL        ")
+    print("=" * 60)
 
-# 1. Cargar el dataset original
-input_csv = "liga_colombiana_sucia (1).csv"
-output_parquet = "liga_colombiana_limpia.parquet"
+    # Pregunta 1: Equipo con más partidos
+    print("\n--- PREGUNTA 1: Equipo con más partidos registrado ---")
+    spark.sql("""
+        SELECT equipo, COUNT(*) AS total_partidos
+        FROM liga_colombiana
+        GROUP BY equipo
+        ORDER BY total_partidos DESC
+        LIMIT 2
+    """).show(truncate=False)
 
-df = pd.read_csv(input_csv)
+    # Pregunta 2: Marcador más frecuente
+    print("\n--- PREGUNTA 2: Marcador (Goles Favor vs Goles Contra) más frecuente ---")
+    spark.sql("""
+        SELECT 
+            CONCAT(CAST(COALESCE(goles_favor, 0) AS INT), ' - ', CAST(COALESCE(goles_contra, 0) AS INT)) AS marcador,
+            COUNT(*) AS frecuencia
+        FROM liga_colombiana
+        GROUP BY marcador
+        ORDER BY frecuencia DESC
+        LIMIT 1
+    """).show(truncate=False)
 
-# ==========================================
-# TRANSFORMACIONES (ETL)
-# ==========================================
+    # Pregunta 3: Promedio de goles en contra para Atlético Nacional
+    print("\n--- PREGUNTA 3: Promedio de goles en contra para Atlético Nacional ---")
+    spark.sql("""
+        SELECT ROUND(AVG(goles_contra), 2) AS promedio_goles_contra
+        FROM liga_colombiana
+        WHERE equipo LIKE '%ATL%TICO NACIONAL%'
+    """).show(truncate=False)
 
-# • Eliminar duplicados
-df_clean = df.drop_duplicates().copy()
+    # Pregunta 4: Fecha(s) con más goles a favor para Santa Fe
+    print("\n--- PREGUNTA 4: Fecha(s) con mayor número de goles a favor para Santa Fe ---")
+    spark.sql("""
+        SELECT fecha, CAST(goles_favor AS INT) AS goles_a_favor
+        FROM liga_colombiana
+        WHERE equipo LIKE '%SANTA FE%'
+          AND goles_favor = (
+              SELECT MAX(goles_favor) 
+              FROM liga_colombiana 
+              WHERE equipo LIKE '%SANTA FE%'
+          )
+    """).show(truncate=False)
 
-# • Normalizar los nombres de los equipos, convertir a mayúsculas y eliminar espacios extras
-df_clean["equipo"] = df_clean["equipo"].astype(str).str.strip().str.upper()
+    # Cierre de la sesión Spark
+    spark.stop()
 
-# • Regenerar fechas faltantes o "fecha desconocida" reemplazando con la fecha predeterminada '2024-07-24 6:15 pm'
-fecha_predeterminada = "2024-07-24 6:15 pm"
-df_clean["fecha"] = df_clean["fecha"].astype(str).str.strip()
-df_clean["fecha"] = df_clean["fecha"].replace(
-    {
-        "fecha desconocida": fecha_predeterminada,
-        "": fecha_predeterminada,
-        "nan": fecha_predeterminada,
-        "None": fecha_predeterminada,
-    }
-).fillna(fecha_predeterminada)
-
-# • Guardar el dataset en formato Parquet
-# Nota: Requiere tener instalado 'pyarrow' o 'fastparquet' en el entorno virtual
-df_clean.to_parquet(output_parquet, index=False)
-print(f"Dataset limpio guardado exitosamente en '{output_parquet}'.\n")
-
-# ==========================================
-# CONSULTAS
-# ==========================================
-
-print("=== RESPUESTAS A LAS CONSULTAS ===\n")
-
-# 1. ¿Cuál es el equipo con más partidos registrado en el dataset?
-partidos_por_equipo = df_clean["equipo"].value_counts()
-equipo_mas_partidos = partidos_por_equipo.index[0]
-total_partidos = partidos_por_equipo.iloc[0]
-
-print(f"1. Equipo con más partidos registrados: {equipo_mas_partidos} ({total_partidos} partidos)")
-
-# 2. ¿Cuál es el marcador goles a favor vs goles en contra más frecuente en el dataset?
-df_clean["goles_favor_int"] = df_clean["goles_favor"].fillna(0).astype(int)
-df_clean["goles_contra_int"] = df_clean["goles_contra"].fillna(0).astype(int)
-df_clean["marcador"] = (
-    df_clean["goles_favor_int"].astype(str) + " - " + df_clean["goles_contra_int"].astype(str)
-)
-
-marcador_mas_frecuente = df_clean["marcador"].value_counts().index[0]
-frecuencia_marcador = df_clean["marcador"].value_counts().iloc[0]
-
-print(f"2. Marcador más frecuente (Goles Favor vs Goles Contra): {marcador_mas_frecuente} ({frecuencia_marcador} veces)")
-
-# 3. ¿Cuál es el promedio de goles en contra para Atlético Nacional?
-nacional_df = df_clean[df_clean["equipo"].str.contains("ATLÉTICO NACIONAL|ATLETICO NACIONAL", regex=True)]
-promedio_gc_nacional = nacional_df["goles_contra"].mean()
-
-print(f"3. Promedio de goles en contra para Atlético Nacional: {promedio_gc_nacional:.2f}")
-
-# 4. ¿En qué fecha Santa Fe registró mayor número de goles a favor?
-santafe_df = df_clean[df_clean["equipo"].str.contains("SANTA FE", regex=True)]
-max_goles_santafe = santafe_df["goles_favor"].max()
-fechas_max_goles = santafe_df[santafe_df["goles_favor"] == max_goles_santafe]["fecha"].tolist()
-
-print(f"4. Santa Fe registró su mayor número de goles a favor ({int(max_goles_santafe)}) en la(s) fecha(s):")
-for f in fechas_max_goles:
-    print(f"   - {f}")
+if __name__ == "__main__":
+    main()
