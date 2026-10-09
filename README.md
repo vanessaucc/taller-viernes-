@@ -34,3 +34,8 @@ df_flights.printSchema()
 
 # Ver las primeras 5 filas de la tabla de vuelos
 df_flights.show(5)
+
+
+
+
+Sjdjsjsbsjkajansnssosbd
