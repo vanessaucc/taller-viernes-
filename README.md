@@ -7,6 +7,7 @@ Proceso ETL:
   3. Carga: Exportación a Parquet y registro de vista temporal para consultas Spark SQL.
 """
 
+import os
 import shutil
 from pathlib import Path
 from pyspark.sql import SparkSession
@@ -26,12 +27,16 @@ def main():
     # ---------------------------------------------------------
     # FASE 1: EXTRACCIÓN (E)
     # ---------------------------------------------------------
-    ruta_csv = "liga_colombiana_sucia (1).csv"
-    
+    DATA_PATH = "liga_colombiana_sucia (1).csv"
+
+    # Verificación preventiva: si el archivo en Windows no tiene extensión .csv visible
+    if not os.path.exists(DATA_PATH) and os.path.exists("liga_colombiana_sucia (1)"):
+        DATA_PATH = "liga_colombiana_sucia (1)"
+
     df_raw = spark.read \
         .option("header", "true") \
         .option("inferSchema", "true") \
-        .csv(ruta_csv)
+        .csv(DATA_PATH)
 
     total_inicial = df_raw.count()
     print("=" * 60)
@@ -46,10 +51,10 @@ def main():
     total_sin_duplicados = df_sin_duplicados.count()
     duplicados_removidos = total_inicial - total_sin_duplicados
 
-    # Paso 2.2: Normalización de nombres de equipos (Mayúsculas y sin espacios a los lados)
+    # Paso 2.2: Normalización de nombres de equipos (Mayúsculas y sin espacios)
     df_normalizado = df_sin_duplicados.withColumn("equipo", trim(upper(col("equipo"))))
 
-    # Paso 2.3: Reemplazar fechas 'fecha desconocida' o nulas con la fecha predeterminada '2024-07-24 6:15 pm'
+    # Paso 2.3: Reemplazar fechas 'fecha desconocida' o nulas con la fecha predeterminada
     fecha_default = "2024-07-24 6:15 pm"
     
     df_limpio = df_normalizado.withColumn(
@@ -65,9 +70,9 @@ def main():
     total_limpio = df_limpio.count()
 
     print("\nRESUMEN DE AUDITORÍA DE CALIDAD DE DATOS (ETL):")
-    print(f"- Registros originales:         {total_inicial}")
-    print(f"- Registros duplicados removidos:{duplicados_removidos}")
-    print(f"- Registros finales procesados: {total_limpio}")
+    print(f"- Registros originales:          {total_inicial}")
+    print(f"- Registros duplicados removidos: {duplicados_removidos}")
+    print(f"- Registros finales procesados:  {total_limpio}")
     print("=" * 60)
 
     # ---------------------------------------------------------
